@@ -6,14 +6,17 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 
-#define LEFT_ENCODER_A  GPIO_NUM_34
-#define LEFT_ENCODER_B  GPIO_NUM_35
+#define LEFT_ENCODER_A      GPIO_NUM_34
+#define LEFT_ENCODER_B      GPIO_NUM_35
+#define RIGHT_ENCODER_A     GPIO_NUM_36
+#define RIGHT_ENCODER_B     GPIO_NUM_39
 
-#define GPIO_INPUT_MASK     ((1ULL << LEFT_ENCODER_A) | (1ULL << LEFT_ENCODER_B))
+#define GPIO_INPUT_MASK     ((1ULL << LEFT_ENCODER_A) | (1ULL << LEFT_ENCODER_B) | (1ULL << RIGHT_ENCODER_A) | (1ULL << RIGHT_ENCODER_B))
 
 #define TAG "MAIN"
 
 static volatile int64_t left_encoder_count = 0;
+static volatile int64_t right_encoder_count = 0;
 
 static void IRAM_ATTR count_left_encoder_ticks(void* arg)
 {
@@ -21,6 +24,15 @@ static void IRAM_ATTR count_left_encoder_ticks(void* arg)
         left_encoder_count--;
     else
         left_encoder_count++;
+    
+}
+
+static void IRAM_ATTR count_right_encoder_ticks(void* arg)
+{
+    if (gpio_get_level(RIGHT_ENCODER_B))
+        right_encoder_count++;
+    else
+        right_encoder_count--;
     
 }
 
@@ -49,10 +61,24 @@ void app_main(void)
         return;
     }
 
+    err = gpio_set_intr_type(RIGHT_ENCODER_A, GPIO_INTR_POSEDGE);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Couldn't set interrupt type on pin: %d", RIGHT_ENCODER_A);
+        return;
+    }
+
     err = gpio_intr_enable(LEFT_ENCODER_A);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "GPIO intr enable - Invalid arguments passed");
+        ESP_LOGE(TAG, "GPIO intr enable on pin: %d - Invalid arguments passed", LEFT_ENCODER_A);
+        return;
+    }
+
+    err = gpio_intr_enable(RIGHT_ENCODER_A);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "GPIO intr enable on pin: %d - Invalid arguments passed", RIGHT_ENCODER_A);
         return;
     }
 
@@ -70,9 +96,17 @@ void app_main(void)
         return;
     }
 
+    err = gpio_isr_handler_add(RIGHT_ENCODER_A, count_right_encoder_ticks, NULL);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Couldn't add isr handler for pin %d: %d", RIGHT_ENCODER_A, err);
+        return;
+    }
+
     while (1)
     {
         ESP_LOGI(TAG, "Left encoder count: %" PRId64, left_encoder_count);
+        ESP_LOGI(TAG, "Right encoder count: %" PRId64, right_encoder_count);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
    
