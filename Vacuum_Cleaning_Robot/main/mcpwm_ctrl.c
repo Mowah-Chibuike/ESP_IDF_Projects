@@ -62,6 +62,8 @@ esp_err_t mcpwm_setup_output_grp(mcpwm_out_grp_config_t *cfg, mcpwm_cmpr_handle_
     mcpwm_gen_handle_t generators[2] = {0};
     mcpwm_generator_config_t gen_config = {};
 
+    ESP_LOGI(TAG, "I am still working");
+
     for (int i = 0; i < 2; i++)
     {
         gen_config.gen_gpio_num = cfg->gpios[i];
@@ -75,46 +77,58 @@ esp_err_t mcpwm_setup_output_grp(mcpwm_out_grp_config_t *cfg, mcpwm_cmpr_handle_
             ESP_LOGI(TAG, "Attached generator on GPIO pin %u", cfg->gpios[i]);
     }
 
+    ESP_LOGI(TAG, "I am still working");
+
     for (int i = 0; i < 2; i++)
     {
         err = mcpwm_generator_set_action_on_timer_event(generators[i],MCPWM_GEN_TIMER_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, MCPWM_TIMER_EVENT_EMPTY, MCPWM_GEN_ACTION_HIGH));
-        err = mcpwm_generator_set_actions_on_compare_event(generators[i],MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, comparator, MCPWM_GEN_ACTION_LOW));
-
         if (err != ESP_OK)
         {
-            ESP_LOGE(TAG, "Error setting actions on [%d] timer and compare events: %u", i, err);
+            ESP_LOGE(TAG, "Error setting actions on [%d] timer events: %u", i, err);
             mcpwm_del_operator(operator);
             if (i == 1)
                 mcpwm_del_generator(generators[0]);
             return (err);
         }
 
-        if (cfg->num_gpios < 2)
+        err = mcpwm_generator_set_actions_on_compare_event(generators[i],MCPWM_GEN_COMPARE_EVENT_ACTION(MCPWM_TIMER_DIRECTION_UP, comparator, MCPWM_GEN_ACTION_LOW));
+
+        if (err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Error setting actions on [%d] compare events: %u", i, err);
+            mcpwm_del_operator(operator);
+            if (i == 1)
+                mcpwm_del_generator(generators[0]);
+            return (err);
+        }
+
+        if (i == 1)
             break;
     }
 
-     mcpwm_dead_time_config_t dt_config = {
-        .posedge_delay_ticks = 3,
-        .negedge_delay_ticks = 0,
-        .flags.invert_output = false
-    };
-    err = mcpwm_generator_set_dead_time(generators[0],generators[0], &dt_config);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Error while setting dead time on generator: %u", err);
-        mcpwm_del_operator(operator);
-        return (err);
-    }
+    ESP_LOGI(TAG, "I am still working");
+    //  mcpwm_dead_time_config_t dt_config = {
+    //     .posedge_delay_ticks = 3,
+    //     .negedge_delay_ticks = 0,
+    //     .flags.invert_output = false
+    // };
+    // err = mcpwm_generator_set_dead_time(generators[0],generators[0], &dt_config);
+    // if (err != ESP_OK) {
+    //     ESP_LOGE(TAG, "Error while setting dead time on generator on pin %d: %u", cfg->gpios[0], err);
+    //     mcpwm_del_operator(operator);
+    //     return (err);
+    // }
         
     
-    if (cfg->num_gpios > 1)
-    {
-        err = mcpwm_generator_set_dead_time(generators[1],generators[1], &dt_config);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Error while setting dead time on generator: %u", err);
-            mcpwm_del_operator(operator);
-            return (err);
-        } 
-    }
+    // if (cfg->num_gpios > 1)
+    // {
+    //     err = mcpwm_generator_set_dead_time(generators[1],generators[1], &dt_config);
+    //     if (err != ESP_OK) {
+    //         ESP_LOGE(TAG, "Error while setting dead time on generator on pin %d: %u", cfg->gpios[1], err);
+    //         mcpwm_del_operator(operator);
+    //         return (err);
+    //     } 
+    // }
 
     *ctrl_handle = comparator;
 
