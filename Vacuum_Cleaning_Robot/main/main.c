@@ -17,12 +17,26 @@ void mission_planner(void *args)
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(timer, PID_LOOP_PERIOD_MS * 1000));
 
-    // Move forward 500mm at speed 200 pulses/10ms
-    motion_ctrl_start_move(&mctx, 1, 500.0f, 200.0f, xTaskGetCurrentTaskHandle());
+    // Move forward 1000mm at speed 200mm/s
+    float target = speed_mm_s_to_counts(300.0f);
+    motion_ctrl_start_move(&mctx, 1, 1000.0f, target, xTaskGetCurrentTaskHandle());
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);    // block until done
 
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
     // Move forward another 300mm
-    motion_ctrl_start_move(&mctx, 1, 300.0f, 150.0f, xTaskGetCurrentTaskHandle());
+    motion_ctrl_start_move(&mctx, 1, 300.0f, target, xTaskGetCurrentTaskHandle());
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    motion_ctrl_start_move(&mctx, -1, 1000.0f, target, xTaskGetCurrentTaskHandle());
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    // Move backward another 300mm
+    motion_ctrl_start_move(&mctx, -1, 300.0f, target, xTaskGetCurrentTaskHandle());
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
     // Robot has completed its mission
