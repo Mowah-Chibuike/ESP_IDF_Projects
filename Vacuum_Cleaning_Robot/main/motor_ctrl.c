@@ -8,10 +8,10 @@ mcpwm_cmpr_handle_t right_ctrl_grp = {0};
 pcnt_unit_handle_t left_encoder = NULL;
 pcnt_unit_handle_t right_encoder = NULL;
 
-static l298n_motor_ctx_t front_left = {0};
-static l298n_motor_ctx_t rear_left = {0};
-static l298n_motor_ctx_t front_right = {0};
-static l298n_motor_ctx_t rear_right = {0};
+l298n_motor_ctx_t front_left = {0};
+l298n_motor_ctx_t rear_left = {0};
+l298n_motor_ctx_t front_right = {0};
+l298n_motor_ctx_t rear_right = {0};
 
 esp_err_t pcnt_encoder_init(uint8_t chan_a, uint8_t chan_b, pcnt_unit_handle_t *out_handle)
 {
@@ -298,19 +298,186 @@ esp_err_t motors_init()
     return (ESP_OK);
 }
 
-void drive_motor(int dir, uint8_t pinA, uint8_t pinB)
+void drive(int dir, l298n_motor_ctx_t *motor)
 {
     if (dir > 0)
     {
-        gpio_set_level(pinA, 1);
-        gpio_set_level(pinB, 0);
+        gpio_set_level(motor->gpio_ctrl.gpio_ctrl_a, 1);
+        gpio_set_level(motor->gpio_ctrl.gpio_ctrl_b, 0);
     }
     else{
-        gpio_set_level(pinA, 0);
-        gpio_set_level(pinB, 1);
+        gpio_set_level(motor->gpio_ctrl.gpio_ctrl_a, 0);
+        gpio_set_level(motor->gpio_ctrl.gpio_ctrl_b, 1);
     }
 }
 
+void motor_set_brake(l298n_motor_ctx_t *motor)
+{
+    gpio_set_level(motor->gpio_ctrl.gpio_ctrl_a, 1);
+    gpio_set_level(motor->gpio_ctrl.gpio_ctrl_b, 1);
+    mcpwm_comparator_set_compare_value(motor->gpio_ctrl.ctrl_handle, 0);
+}
+
+void pid_motor_ctrl(l298n_motor_ctx_t *motor)
+{
+    // 1. Measure actual speed
+    int current_count = 0;
+    pcnt_unit_get_count(motor->pcnt_encoder, &current_count);
+    int raw_counts = current_count - motor->last_count;
+    int real_pulses   = abs(raw_counts);
+    motor->last_count       = current_count;
+    motor->report_pulses    = raw_counts;
+
+    // 2. Compute error against target set by Layer 3
+    float error     = motor->target_speed - (float)real_pulses;
+    float new_speed = 0;
+
+    // 3. PID compute
+    pid_compute(motor->pid_ctrl, error, &new_speed);
+
+    // 4. Clamp and apply
+    if (new_speed < 0) new_speed = 0;
+    if (new_speed > motor->duty_tick_max - 1) new_speed = motor->duty_tick_max - 1;
+
+    mcpwm_comparator_set_compare_value(motor->gpio_ctrl.ctrl_handle, (uint32_t)new_speed);
+}
+
+void motion_ctrl_init(motion_ctx_t *mctx)
+{
+    mctx->front_left_motor       = &front_left;
+    mctx->front_right_motor      = &front_right;
+    mctx->rear_left_motor       = &rear_left;
+    mctx->rear_right_motor      = &rear_right;
+    mctx->state            = MOTION_STATE_IDLE;
+    mctx->base_speed       = 0;
+    mctx->target_counts    = 0;
+    mctx->decel_threshold  = (int)(DECEL_THRESHOLD_MM * COUNTS_PER_MM);
+    mctx->min_speed        = MIN_SPEED_PULSES;
+    mctx->correction_gain  = STRAIGHT_CORRECTION;
+    mctx->waiting_task     = NULL;
+}
+
+void motion_ctrl_start_move(motion_ctx_t *mctx,
+                       int8_t        dir, 
+                       float         distance_mm,
+                       float         speed_pulses_per_10ms,
+                       TaskHandle_t  calling_task)
+{
+    mctx->direction = dir;
+    // Convert distance to encoder counts
+    mctx->target_counts = (int32_t)(distance_mm * COUNTS_PER_MM);
+    mctx->base_speed    = speed_pulses_per_10ms;
+    mctx->waiting_task  = calling_task;
+
+    // Snapshot encoder positions at move start
+    int left_count  = 0;
+    int right_count = 0;
+    pcnt_unit_get_count(mctx->rear_left_motor->pcnt_encoder,  &left_count);
+    pcnt_unit_get_count(mctx->rear_right_motor->pcnt_encoder, &right_count);
+    mctx->left_start_count  = left_count;
+    mctx->right_start_count = right_count;
+
+    // Reset PIDs — critical, clears integral from previous move
+    pid_reset_ctrl_block(mctx->front_left_motor->pid_ctrl);
+    pid_reset_ctrl_block(mctx->front_right_motor->pid_ctrl);
+    pid_reset_ctrl_block(mctx->rear_left_motor->pid_ctrl);
+    pid_reset_ctrl_block(mctx->rear_right_motor->pid_ctrl);
+
+    // Set direction
+    drive(dir, mctx->front_left_motor);
+    drive(dir, mctx->front_right_motor);
+    drive(dir, mctx->rear_left_motor);
+    drive(dir, mctx->rear_right_motor);
+
+    // Set initial speed targets
+    mctx->front_left_motor->target_speed  = speed_pulses_per_10ms;
+    mctx->front_right_motor->target_speed = speed_pulses_per_10ms;
+    mctx->rear_left_motor->target_speed  = speed_pulses_per_10ms;
+    mctx->rear_right_motor->target_speed = speed_pulses_per_10ms;
+
+    mctx->state = MOTION_STATE_MOVING;
+}
+
+void motion_ctrl_update(motion_ctx_t *mctx)
+{
+    if (mctx->state == MOTION_STATE_IDLE) return;
+
+    // --- 1. Calculate distance traveled on each wheel ---
+    int left_current  = 0;
+    int right_current = 0;
+    pcnt_unit_get_count(mctx->rear_left_motor->pcnt_encoder,  &left_current);
+    pcnt_unit_get_count(mctx->rear_right_motor->pcnt_encoder, &right_current);
+
+    int left_traveled  = abs(left_current  - mctx->left_start_count);
+    int right_traveled = abs(right_current - mctx->right_start_count);
+    int avg_traveled   = (left_traveled + right_traveled) / 2;
+    int remaining      = mctx->target_counts - avg_traveled;
+
+    // --- 2. Check completion ---
+    if (remaining <= 0) {
+        motor_set_brake(mctx->front_left_motor);
+        motor_set_brake(mctx->front_right_motor);
+        motor_set_brake(mctx->rear_left_motor);
+        motor_set_brake(mctx->rear_right_motor);
+        mctx->front_left_motor->target_speed  = 0;
+        mctx->front_right_motor->target_speed = 0;
+        mctx->rear_left_motor->target_speed  = 0;
+        mctx->rear_right_motor->target_speed = 0;
+        mctx->state = MOTION_STATE_IDLE;
+
+        // Notify mission layer
+        if (mctx->waiting_task != NULL) {
+            xTaskNotifyGive(mctx->waiting_task);
+            mctx->waiting_task = NULL;
+        }
+        return;
+    }
+
+    // --- 3. Deceleration ramp ---
+    float speed = mctx->base_speed;
+
+    if (mctx->state == MOTION_STATE_MOVING &&
+        remaining < mctx->decel_threshold)
+    {
+        mctx->state = MOTION_STATE_DECELERATING;
+    }
+
+    if (mctx->state == MOTION_STATE_DECELERATING) {
+        // Linear ramp from base_speed down to min_speed
+        float ratio = (float)remaining / (float)mctx->decel_threshold;
+        speed = mctx->min_speed + (mctx->base_speed - mctx->min_speed) * ratio;
+        if (speed < mctx->min_speed) speed = mctx->min_speed;
+    }
+
+    // --- 4. Straight line correction ---
+    // Positive drift means left is ahead of right → slow left, speed up right
+    float drift = (float)(left_traveled - right_traveled);
+    float left_speed  = speed - (drift * mctx->correction_gain * mctx->direction);
+    float right_speed = speed + (drift * mctx->correction_gain * mctx->direction);
+
+    // Clamp corrected speeds
+    if (left_speed  < mctx->min_speed) left_speed  = mctx->min_speed;
+    if (right_speed < mctx->min_speed) right_speed = mctx->min_speed;
+
+    // --- 5. Push new targets down to Layer 2 ---
+    mctx->front_left_motor->target_speed  = left_speed;
+    mctx->front_right_motor->target_speed = right_speed;
+    mctx->rear_left_motor->target_speed  = left_speed;
+    mctx->rear_right_motor->target_speed = right_speed;
+}
+
+void control_loop_cb(void *args)
+{
+    motion_ctx_t *mctx = (motion_ctx_t *)args;
+
+    // Layer 2 — PID on encoder-equipped motors only
+    pid_motor_ctrl(mctx->rear_left_motor);
+    pid_motor_ctrl(mctx->rear_right_motor);
+
+    // Layer 3 — distance tracking and speed target updates
+    motion_ctrl_update(mctx);
+    ESP_LOGI(TAG, "Control");
+}
 
 // void move_forward(uint8_t speed)
 // {

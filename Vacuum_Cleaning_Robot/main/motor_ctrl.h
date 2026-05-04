@@ -3,8 +3,11 @@
 
 #include "mcpwm_ctrl.h"
 #include <inttypes.h>
+#include <stdlib.h>
 #include "driver/pulse_cnt.h"
 #include "pid_ctrl.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define FRONT_LEFT_A        33
 #define FRONT_LEFT_B        25
@@ -32,7 +35,7 @@
 
 #define ENCODER_PPR             275
 #define WHEEL_CIRCUM            204.2f // mm
-#define PULSES_PER_REV          (WHEEL_CIRCUM / ENCODER_PPR)
+#define COUNTS_PER_MM          (ENCODER_PPR / WHEEL_CIRCUM)
 
 #define ENCODER_PCNT_HIGH_LIMIT   1000
 #define ENCODER_PCNT_LOW_LIMIT    -1000
@@ -40,7 +43,11 @@
 #define PID_KP                  1.0f
 #define PID_KI                  0.0f
 #define PID_KD                  0.0f
-#define PID_LOOP_PERIOS_MS      10
+#define PID_LOOP_PERIOD_MS      10
+
+#define DECEL_THRESHOLD_MM      150         // start slowing 150mm before target
+#define MIN_SPEED_PULSES        30          // minimum speed during decel
+#define STRAIGHT_CORRECTION     0.3f        // gain for differential correction
 
 typedef struct
 {
@@ -80,17 +87,19 @@ typedef struct {
     // Motion state machine
     motion_state_t      state;
 
+    int8_t direction;
+
     // Distance tracking
-    int32_t             left_start_count;
-    int32_t             right_start_count;
-    int32_t             target_counts;       // in encoder counts
+    int             left_start_count;
+    int             right_start_count;
+    int             target_counts;       // in encoder counts
 
     // Speed
     float               base_speed;          // pulses/10ms
     float               min_speed;           // floor during deceleration
 
     // Deceleration
-    int32_t             decel_threshold;     // counts before target to start slowing
+    int            decel_threshold;     // counts before target to start slowing
 
     // Straight line correction
     float               correction_gain;
@@ -101,10 +110,14 @@ typedef struct {
 
 esp_err_t pcnt_encoder_init(uint8_t chan_a, uint8_t chan_b, pcnt_unit_handle_t *out_handle);
 esp_err_t motors_init();
-void move_forward(uint8_t speed);
-void move_backward(uint8_t speed);
-void turn_left(uint8_t speed);
-void turn_right(uint8_t speed);
+void motion_ctrl_init(motion_ctx_t *mctx);
+void control_loop_cb(void *args);
+void motion_ctrl_start_move(motion_ctx_t *mctx,
+                       int8_t        dir, 
+                       float         distance_mm,
+                       float         speed_pulses_per_10ms,
+                       TaskHandle_t  calling_task);
+void motion_ctrl_update(motion_ctx_t *mctx);
 
 
 #endif /* MOTOR_CTRL_H */
