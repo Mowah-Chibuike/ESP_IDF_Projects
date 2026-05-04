@@ -43,10 +43,10 @@
 #define PID_KP                  1.0f
 #define PID_KI                  0.0f
 #define PID_KD                  0.0f
-#define PID_LOOP_PERIOD_MS      10
+#define PID_LOOP_PERIOD_MS      50
 
 #define DECEL_THRESHOLD_MM      150         // start slowing 150mm before target
-#define MIN_SPEED_PULSES        30          // minimum speed during decel
+#define MIN_SPEED_PULSES        3          // minimum speed during decel
 #define STRAIGHT_CORRECTION     0.3f        // gain for differential correction
 
 typedef struct
@@ -118,6 +118,8 @@ void motion_ctrl_start_move(motion_ctx_t *mctx,
                        float         speed_pulses_per_10ms,
                        TaskHandle_t  calling_task);
 void motion_ctrl_update(motion_ctx_t *mctx);
+
+float speed_mm_s_to_counts(float mm_per_s);
 
 
 #endif /* MOTOR_CTRL_H */
