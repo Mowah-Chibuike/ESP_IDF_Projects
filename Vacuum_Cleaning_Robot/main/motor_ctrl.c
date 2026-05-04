@@ -479,6 +479,13 @@ void control_loop_cb(void *args)
     ESP_LOGI(TAG, "Control");
 }
 
+// Helper to convert mm/s to counts per PID period
+float speed_mm_s_to_counts(float mm_per_s)
+{
+    float mm_per_period = mm_per_s * (PID_LOOP_PERIOD_MS / 1000.0f);
+    return mm_per_period * COUNTS_PER_MM;
+}
+
 // void move_forward(uint8_t speed)
 // {
 //     // Adjust IN Pins
